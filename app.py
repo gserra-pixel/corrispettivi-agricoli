@@ -39,19 +39,18 @@ if numbers_file and billy_file:
     }).fillna(0).reset_index()
 
     # =========================
-    # BILLY - TROVA HEADER AUTOMATICO
+    # BILLY
     # =========================
     raw_billy = pd.read_excel(billy_file, sheet_name="Corrispettivi", header=None)
 
     header_row = None
     for i in range(len(raw_billy)):
-        row_values = raw_billy.iloc[i].astype(str).str.strip()
-        if "Data" in row_values.values:
+        if raw_billy.iloc[i].astype(str).str.contains("Data", case=False).any():
             header_row = i
             break
 
     if header_row is None:
-        st.error("Non riesco a trovare la riga con 'Data' nel file Billy.")
+        st.error("Non trovo la riga intestazione nel file Billy.")
         st.stop()
 
     billy_df = pd.read_excel(
@@ -61,19 +60,29 @@ if numbers_file and billy_file:
     )
 
     billy_df.columns = billy_df.columns.str.strip()
-    billy_df["Data"] = pd.to_datetime(billy_df["Data"], dayfirst=True, errors="coerce")
+
+    # 🔎 TROVA COLONNE AUTOMATICAMENTE
+    cols = billy_df.columns.str.lower()
+
+    data_col = billy_df.columns[cols.str.contains("data")][0]
+    contanti_col = billy_df.columns[cols.str.contains("contanti")][0]
+    elettronico_col = billy_df.columns[cols.str.contains("elettron")][0]
+    totale_col = billy_df.columns[cols.str.contains("totale")][0]
+
+    billy_df[data_col] = pd.to_datetime(billy_df[data_col], dayfirst=True, errors="coerce")
 
     billy_grouped = (
-        billy_df.groupby("Data")[["Contanti", "Elettronico", "Totale lordo"]]
+        billy_df.groupby(data_col)[[contanti_col, elettronico_col, totale_col]]
         .sum()
         .reset_index()
     )
 
-    billy_grouped.rename(columns={
-        "Contanti": "Contanti_Billy",
-        "Elettronico": "POS_Billy",
-        "Totale lordo": "Totale_Billy"
-    }, inplace=True)
+    billy_grouped.columns = [
+        "Data",
+        "Contanti_Billy",
+        "POS_Billy",
+        "Totale_Billy"
+    ]
 
     # =========================
     # MERGE
@@ -128,7 +137,7 @@ if numbers_file and billy_file:
         elements.append(Spacer(1, 20))
         elements.append(Paragraph(f"Differenza Totale Periodo: € {totale_diff:.2f}", styles["Heading2"]))
 
-        doc.build(elements)
+        doc.build(buffer)
         buffer.seek(0)
 
         st.download_button(
