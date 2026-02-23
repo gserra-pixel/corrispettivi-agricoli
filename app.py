@@ -6,28 +6,41 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 
-st.title("Registro Corrispettivi - Calcolo IVA da CSV")
+st.title("Registro Corrispettivi - Mercato vs Billy")
 
-numbers_file = st.file_uploader("Carica CSV tuo mercato (Data;Importo;Aliquota)", type=["csv"])
+numbers_file = st.file_uploader("Carica CSV mercato (Data;Importo;Aliquota)", type=["csv"])
 billy_file = st.file_uploader("Carica XLSX Billy", type=["xlsx"])
 
 if numbers_file and billy_file:
 
-    # ===== TUO CSV =====
+    # ======================
+    # TUO CSV (ROBUSTO)
+    # ======================
     tuo_df = pd.read_csv(numbers_file, sep=";")
     tuo_df.columns = tuo_df.columns.str.strip()
 
-    tuo_df["Data"] = pd.to_datetime(tuo_df["Data"], dayfirst=True).dt.date
+    # Date sicure
+    tuo_df["Data"] = pd.to_datetime(tuo_df["Data"], dayfirst=True, errors="coerce")
+    tuo_df = tuo_df.dropna(subset=["Data"])
+    tuo_df["Data"] = tuo_df["Data"].dt.date
+
+    # Importo e Aliquota sicuri
     tuo_df["Importo"] = pd.to_numeric(tuo_df["Importo"], errors="coerce").fillna(0)
     tuo_df["Aliquota"] = pd.to_numeric(tuo_df["Aliquota"], errors="coerce").fillna(0)
 
-    # Calcolo imponibile e IVA
+    # Calcolo IVA
     tuo_df["Imponibile"] = tuo_df["Importo"] / (1 + tuo_df["Aliquota"] / 100)
     tuo_df["IVA"] = tuo_df["Importo"] - tuo_df["Imponibile"]
 
-    tuo_grouped = tuo_df.groupby(["Data", "Aliquota"]).sum(numeric_only=True).reset_index()
+    tuo_grouped = (
+        tuo_df.groupby(["Data", "Aliquota"])
+        .sum(numeric_only=True)
+        .reset_index()
+    )
 
-    # ===== BILLY =====
+    # ======================
+    # BILLY
+    # ======================
     raw = pd.read_excel(billy_file, sheet_name="Corrispettivi", header=None)
 
     header_row = None
@@ -36,24 +49,47 @@ if numbers_file and billy_file:
             header_row = i
             break
 
+    if header_row is None:
+        st.error("Non trovo intestazione Data nel file Billy.")
+        st.stop()
+
     billy_df = pd.read_excel(billy_file, sheet_name="Corrispettivi", header=header_row)
     billy_df.columns = billy_df.columns.str.strip()
 
-    billy_df["Data"] = pd.to_datetime(billy_df["Data"], dayfirst=True).dt.date
-    totale_col = [c for c in billy_df.columns if "totale" in c.lower()][0]
+    billy_df["Data"] = pd.to_datetime(billy_df["Data"], dayfirst=True, errors="coerce")
+    billy_df = billy_df.dropna(subset=["Data"])
+    billy_df["Data"] = billy_df["Data"].dt.date
 
-    billy_grouped = billy_df.groupby("Data")[totale_col].sum().reset_index()
+    totale_col = [c for c in billy_df.columns if "totale" in c.lower()]
+
+    if not totale_col:
+        st.error("Non trovo colonna Totale nel file Billy.")
+        st.stop()
+
+    totale_col = totale_col[0]
+
+    billy_grouped = (
+        billy_df.groupby("Data")[totale_col]
+        .sum()
+        .reset_index()
+    )
+
     billy_grouped.rename(columns={totale_col: "Totale_Billy"}, inplace=True)
 
-    # ===== MERGE =====
+    # ======================
+    # MERGE
+    # ======================
     reg = pd.merge(tuo_grouped, billy_grouped, on="Data", how="left").fillna(0)
 
-    reg["Corrispettivo_Lordo"] = reg["Importo"] - reg["Totale_Billy"]
+    reg["Da_Registrare"] = reg["Importo"] - reg["Totale_Billy"]
+    reg = reg.sort_values("Data")
 
     st.subheader("Riepilogo")
     st.dataframe(reg)
 
-    # ===== PDF =====
+    # ======================
+    # PDF
+    # ======================
     if st.button("Genera PDF Registro"):
 
         buffer = BytesIO()
@@ -63,10 +99,10 @@ if numbers_file and billy_file:
 
         elements.append(Paragraph("AZIENDA AGRICOLA PEDRA E LUNA", styles["Heading1"]))
         elements.append(Spacer(1, 12))
-        elements.append(Paragraph("Registro Corrispettivi", styles["Heading2"]))
+        elements.append(Paragraph("Registro Corrispettivi - Regime Speciale Art.34 DPR 633/72", styles["Heading2"]))
         elements.append(Spacer(1, 20))
 
-        data = [["Data", "Aliquota %", "Lordo", "Imponibile", "IVA", "Billy", "Da Registrare"]]
+        data = [["Data", "Aliquota", "Lordo", "Imponibile", "IVA", "Billy", "Da Registrare"]]
 
         for _, r in reg.iterrows():
             data.append([
@@ -76,7 +112,7 @@ if numbers_file and billy_file:
                 f"€ {r['Imponibile']:.2f}",
                 f"€ {r['IVA']:.2f}",
                 f"€ {r['Totale_Billy']:.2f}",
-                f"€ {r['Corrispettivo_Lordo']:.2f}",
+                f"€ {r['Da_Registrare']:.2f}",
             ])
 
         table = Table(data, hAlign='LEFT')
@@ -89,7 +125,7 @@ if numbers_file and billy_file:
         elements.append(table)
         elements.append(Spacer(1, 20))
 
-        totale_periodo = reg["Corrispettivo_Lordo"].sum()
+        totale_periodo = reg["Da_Registrare"].sum()
         elements.append(Paragraph(f"Totale periodo da registrare: € {totale_periodo:.2f}", styles["Heading2"]))
 
         doc.build(elements)
