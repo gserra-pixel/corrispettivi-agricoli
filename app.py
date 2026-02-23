@@ -39,7 +39,7 @@ if numbers_file and billy_file:
     }).fillna(0).reset_index()
 
     # =========================
-    # BILLY
+    # BILLY - TROVA HEADER AUTOMATICO
     # =========================
     raw_billy = pd.read_excel(billy_file, sheet_name="Corrispettivi", header=None)
 
@@ -50,7 +50,7 @@ if numbers_file and billy_file:
             break
 
     if header_row is None:
-        st.error("Non trovo la riga intestazione nel file Billy.")
+        st.error("Non riesco a trovare la riga intestazione nel file Billy.")
         st.stop()
 
     billy_df = pd.read_excel(
@@ -60,19 +60,17 @@ if numbers_file and billy_file:
     )
 
     billy_df.columns = billy_df.columns.str.strip()
-
-    # 🔎 TROVA COLONNE AUTOMATICAMENTE
     cols = billy_df.columns.str.lower()
 
+    # Trova colonne dinamicamente
     data_col = billy_df.columns[cols.str.contains("data")][0]
     contanti_col = billy_df.columns[cols.str.contains("contanti")][0]
     elettronico_col = billy_df.columns[cols.str.contains("elettron")][0]
-    totale_col = billy_df.columns[cols.str.contains("totale")][0]
 
     billy_df[data_col] = pd.to_datetime(billy_df[data_col], dayfirst=True, errors="coerce")
 
     billy_grouped = (
-        billy_df.groupby(data_col)[[contanti_col, elettronico_col, totale_col]]
+        billy_df.groupby(data_col)[[contanti_col, elettronico_col]]
         .sum()
         .reset_index()
     )
@@ -80,9 +78,13 @@ if numbers_file and billy_file:
     billy_grouped.columns = [
         "Data",
         "Contanti_Billy",
-        "POS_Billy",
-        "Totale_Billy"
+        "POS_Billy"
     ]
+
+    # Ricalcolo totale
+    billy_grouped["Totale_Billy"] = (
+        billy_grouped["Contanti_Billy"] + billy_grouped["POS_Billy"]
+    )
 
     # =========================
     # MERGE
@@ -137,7 +139,7 @@ if numbers_file and billy_file:
         elements.append(Spacer(1, 20))
         elements.append(Paragraph(f"Differenza Totale Periodo: € {totale_diff:.2f}", styles["Heading2"]))
 
-        doc.build(buffer)
+        doc.build(elements)
         buffer.seek(0)
 
         st.download_button(
