@@ -5,25 +5,46 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 
-st.title("Report Corrispettivi da Billy")
+st.title("Confronto Corrispettivi - Numbers vs Billy")
 
-file = st.file_uploader("Carica file XLSX di Billy", type=["xlsx"])
+numbers_file = st.file_uploader("Carica CSV Numbers (Data, Metodo, Importo)", type=["csv"])
+billy_file = st.file_uploader("Carica XLSX Billy", type=["xlsx"])
 
-if file:
+if numbers_file and billy_file:
 
-    df = pd.read_excel(file)
+    # NUMBERS
+    numbers_df = pd.read_csv(numbers_file)
+    numbers_df["Data"] = pd.to_datetime(numbers_df["Data"], dayfirst=True)
 
-    # Assumiamo colonne: Data, Totale, POS, Contanti
-    df["Data"] = pd.to_datetime(df["Data"], dayfirst=True)
+    # Separiamo per metodo
+    contanti_reali = numbers_df[numbers_df["Metodo"] == "Contanti"].groupby("Data")["Importo"].sum()
+    pos_reali = numbers_df[numbers_df["Metodo"] == "POS"].groupby("Data")["Importo"].sum()
 
-    giornaliero = df.groupby("Data")[["Totale","POS","Contanti"]].sum().reset_index()
+    numbers_grouped = pd.DataFrame({
+        "Contanti_Reale": contanti_reali,
+        "POS_Reale": pos_reali
+    }).fillna(0).reset_index()
 
-    totale_mese = giornaliero["Totale"].sum()
+    # BILLY
+    billy_df = pd.read_excel(billy_file)
+    billy_df["Data"] = pd.to_datetime(billy_df["Data"], dayfirst=True)
 
-    st.subheader("Riepilogo Giornaliero")
-    st.dataframe(giornaliero)
+    billy_grouped = billy_df.groupby("Data")[["Contanti","POS"]].sum().reset_index()
+    billy_grouped.rename(columns={
+        "Contanti": "Contanti_Billy",
+        "POS": "POS_Billy"
+    }, inplace=True)
 
-    st.subheader(f"Totale Periodo: € {totale_mese:.2f}")
+    # Merge
+    confronto = pd.merge(numbers_grouped, billy_grouped, on="Data", how="outer").fillna(0)
+
+    # Differenze
+    confronto["Diff_Contanti"] = confronto["Contanti_Reale"] - confronto["Contanti_Billy"]
+    confronto["Diff_POS"] = confronto["POS_Reale"] - confronto["POS_Billy"]
+    confronto["Diff_Totale"] = confronto["Diff_Contanti"] + confronto["Diff_POS"]
+
+    st.subheader("Tabella Confronto")
+    st.dataframe(confronto)
 
     if st.button("Genera PDF"):
 
@@ -34,21 +55,20 @@ if file:
 
         elements.append(Paragraph("AZIENDA AGRICOLA PEDRA E LUNA", styles["Heading1"]))
         elements.append(Spacer(1, 12))
-        elements.append(Paragraph("Regime Speciale IVA art.34 DPR 633/72", styles["Normal"]))
+        elements.append(Paragraph("Confronto Corrispettivi Numbers vs Billy", styles["Normal"]))
         elements.append(Spacer(1, 20))
 
-        for _, row in giornaliero.iterrows():
+        for _, row in confronto.iterrows():
             testo = f"""
             Data: {row['Data'].strftime('%d/%m/%Y')}<br/>
-            Totale: € {row['Totale']:.2f}<br/>
-            POS: € {row['POS']:.2f}<br/>
-            Contanti: € {row['Contanti']:.2f}<br/><br/>
+            Contanti Reali: € {row['Contanti_Reale']:.2f}<br/>
+            Contanti Billy: € {row['Contanti_Billy']:.2f}<br/>
+            POS Reale: € {row['POS_Reale']:.2f}<br/>
+            POS Billy: € {row['POS_Billy']:.2f}<br/>
+            Differenza Totale: € {row['Diff_Totale']:.2f}<br/><br/>
             """
             elements.append(Paragraph(testo, styles["Normal"]))
             elements.append(Spacer(1, 12))
-
-        elements.append(Spacer(1, 20))
-        elements.append(Paragraph(f"Totale Periodo: € {totale_mese:.2f}", styles["Heading2"]))
 
         doc.build(elements)
         buffer.seek(0)
@@ -56,6 +76,6 @@ if file:
         st.download_button(
             "Scarica PDF",
             buffer,
-            file_name="corrispettivi_billy.pdf",
+            file_name="confronto_corrispettivi.pdf",
             mime="application/pdf"
         )
