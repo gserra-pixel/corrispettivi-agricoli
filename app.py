@@ -6,58 +6,36 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 
-st.title("Registro Corrispettivi - Mercato vs Billy")
+st.title("Registro Corrispettivi - Sottrazione Billy per Data")
 
-numbers_file = st.file_uploader("Carica CSV mercato", type=["csv"])
+numbers_file = st.file_uploader("Carica CSV mercato (Data;Importo)", type=["csv"])
 billy_file = st.file_uploader("Carica XLSX Billy", type=["xlsx"])
 
 if numbers_file and billy_file:
 
     # ======================
-    # LETTURA CSV ROBUSTA
+    # TUO CSV
     # ======================
     tuo_df = pd.read_csv(numbers_file, sep=None, engine="python")
     tuo_df.columns = tuo_df.columns.str.strip()
 
-    st.write("DEBUG - CSV letto così:")
-    st.dataframe(tuo_df)
-
-    # Normalizziamo nomi colonne
-    col_lower = tuo_df.columns.str.lower()
-
-    data_col = tuo_df.columns[col_lower.str.contains("data")][0]
-    importo_col = tuo_df.columns[col_lower.str.contains("importo")][0]
-    aliquota_col = tuo_df.columns[col_lower.str.contains("aliquota")][0]
-
-    # Pulizia numeri (gestisce 580,00 o 580.00)
-    tuo_df[importo_col] = (
-        tuo_df[importo_col]
-        .astype(str)
-        .str.replace(",", ".", regex=False)
-    )
-
-    tuo_df[aliquota_col] = (
-        tuo_df[aliquota_col]
-        .astype(str)
-        .str.replace(",", ".", regex=False)
-    )
+    data_col = [c for c in tuo_df.columns if "data" in c.lower()][0]
+    importo_col = [c for c in tuo_df.columns if "importo" in c.lower()][0]
 
     tuo_df["Data"] = pd.to_datetime(tuo_df[data_col], dayfirst=True, errors="coerce")
     tuo_df = tuo_df.dropna(subset=["Data"])
     tuo_df["Data"] = tuo_df["Data"].dt.date
 
-    tuo_df["Importo"] = pd.to_numeric(tuo_df[importo_col], errors="coerce").fillna(0)
-    tuo_df["Aliquota"] = pd.to_numeric(tuo_df[aliquota_col], errors="coerce").fillna(0)
-
-    # Calcolo IVA
-    tuo_df["Imponibile"] = tuo_df["Importo"] / (1 + tuo_df["Aliquota"] / 100)
-    tuo_df["IVA"] = tuo_df["Importo"] - tuo_df["Imponibile"]
-
-    tuo_grouped = (
-        tuo_df.groupby(["Data", "Aliquota"])
-        .sum(numeric_only=True)
-        .reset_index()
+    tuo_df["Importo"] = (
+        tuo_df[importo_col]
+        .astype(str)
+        .str.replace(",", ".", regex=False)
     )
+    tuo_df["Importo"] = pd.to_numeric(tuo_df["Importo"], errors="coerce").fillna(0)
+
+    # SOMMA PER DATA
+    tuo_totali = tuo_df.groupby("Data")["Importo"].sum().reset_index()
+    tuo_totali.rename(columns={"Importo": "Totale_Tuo"}, inplace=True)
 
     # ======================
     # BILLY
@@ -78,7 +56,6 @@ if numbers_file and billy_file:
     billy_df["Data"] = billy_df["Data"].dt.date
 
     cols_lower = billy_df.columns.str.lower()
-
     contanti_col = billy_df.columns[cols_lower.str.contains("contanti")][0]
     elettronico_col = billy_df.columns[cols_lower.str.contains("elettron")][0]
 
@@ -87,19 +64,69 @@ if numbers_file and billy_file:
 
     billy_df["Totale_Billy"] = billy_df[contanti_col] + billy_df[elettronico_col]
 
-    billy_grouped = (
-        billy_df.groupby("Data")["Totale_Billy"]
-        .sum()
-        .reset_index()
-    )
+    billy_totali = billy_df.groupby("Data")["Totale_Billy"].sum().reset_index()
 
     # ======================
-    # MERGE
+    # MERGE PER DATA
     # ======================
-    reg = pd.merge(tuo_grouped, billy_grouped, on="Data", how="left").fillna(0)
+    registro = pd.merge(
+        tuo_totali,
+        billy_totali,
+        on="Data",
+        how="left"
+    ).fillna(0)
 
-    reg["Da_Registrare"] = reg["Importo"] - reg["Totale_Billy"]
-    reg = reg.sort_values("Data")
+    registro["Da_Registrare"] = registro["Totale_Tuo"] - registro["Totale_Billy"]
 
-    st.subheader("Riepilogo")
-    st.dataframe(reg)
+    registro = registro.sort_values("Data")
+
+    st.subheader("Riepilogo finale per il PDF")
+    st.dataframe(registro)
+
+    # ======================
+    # PDF
+    # ======================
+    if st.button("Genera PDF Registro"):
+
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4)
+        styles = getSampleStyleSheet()
+        elements = []
+
+        elements.append(Paragraph("AZIENDA AGRICOLA PEDRA E LUNA", styles["Heading1"]))
+        elements.append(Spacer(1, 12))
+        elements.append(Paragraph("Registro Corrispettivi", styles["Heading2"]))
+        elements.append(Spacer(1, 20))
+
+        data = [["Data", "Totale Mercato", "Totale Billy", "Da Registrare"]]
+
+        for _, r in registro.iterrows():
+            data.append([
+                r["Data"].strftime("%d/%m/%Y"),
+                f"€ {r['Totale_Tuo']:.2f}",
+                f"€ {r['Totale_Billy']:.2f}",
+                f"€ {r['Da_Registrare']:.2f}",
+            ])
+
+        table = Table(data, hAlign='LEFT')
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.lightgrey),
+            ("GRID", (0,0), (-1,-1), 0.5, colors.grey),
+            ("ALIGN", (1,1), (-1,-1), "RIGHT"),
+        ]))
+
+        elements.append(table)
+        elements.append(Spacer(1, 20))
+
+        totale_periodo = registro["Da_Registrare"].sum()
+        elements.append(Paragraph(f"Totale periodo da registrare: € {totale_periodo:.2f}", styles["Heading2"]))
+
+        doc.build(elements)
+        buffer.seek(0)
+
+        st.download_button(
+            "Scarica PDF Registro Corrispettivi",
+            buffer,
+            file_name="registro_corrispettivi.pdf",
+            mime="application/pdf"
+        )
