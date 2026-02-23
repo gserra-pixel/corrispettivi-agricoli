@@ -6,7 +6,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 
-st.title("Registro Corrispettivi - Sottrazione Billy per Data")
+st.title("Registro Corrispettivi - Mercato vs Billy")
 
 numbers_file = st.file_uploader("Carica CSV mercato (Data;Importo)", type=["csv"])
 billy_file = st.file_uploader("Carica XLSX Billy", type=["xlsx"])
@@ -14,31 +14,51 @@ billy_file = st.file_uploader("Carica XLSX Billy", type=["xlsx"])
 if numbers_file and billy_file:
 
     # ======================
-    # TUO CSV
+    # 1) TUO CSV (BASE ASSOLUTA)
     # ======================
     tuo_df = pd.read_csv(numbers_file, sep=None, engine="python")
     tuo_df.columns = tuo_df.columns.str.strip()
 
+    # Individua colonne
     data_col = [c for c in tuo_df.columns if "data" in c.lower()][0]
     importo_col = [c for c in tuo_df.columns if "importo" in c.lower()][0]
 
-    tuo_df["Data"] = pd.to_datetime(tuo_df[data_col], dayfirst=True, errors="coerce")
+    # Pulizia data
+    tuo_df["Data"] = pd.to_datetime(
+        tuo_df[data_col],
+        dayfirst=True,
+        errors="coerce"
+    )
+
     tuo_df = tuo_df.dropna(subset=["Data"])
     tuo_df["Data"] = tuo_df["Data"].dt.date
 
+    # Pulizia importi (gestisce 580,00 o 580.00)
     tuo_df["Importo"] = (
         tuo_df[importo_col]
         .astype(str)
         .str.replace(",", ".", regex=False)
     )
-    tuo_df["Importo"] = pd.to_numeric(tuo_df["Importo"], errors="coerce").fillna(0)
 
-    # SOMMA PER DATA
-    tuo_totali = tuo_df.groupby("Data")["Importo"].sum().reset_index()
+    tuo_df["Importo"] = pd.to_numeric(
+        tuo_df["Importo"],
+        errors="coerce"
+    ).fillna(0)
+
+    # SOMMA PER DATA (ma partendo solo dal tuo CSV)
+    tuo_totali = (
+        tuo_df.groupby("Data")["Importo"]
+        .sum()
+        .reset_index()
+    )
+
     tuo_totali.rename(columns={"Importo": "Totale_Tuo"}, inplace=True)
 
+    st.subheader("Totali dal tuo CSV (prima del merge)")
+    st.dataframe(tuo_totali)
+
     # ======================
-    # BILLY
+    # 2) BILLY
     # ======================
     raw = pd.read_excel(billy_file, sheet_name="Corrispettivi", header=None)
 
@@ -48,43 +68,75 @@ if numbers_file and billy_file:
             header_row = i
             break
 
-    billy_df = pd.read_excel(billy_file, sheet_name="Corrispettivi", header=header_row)
+    if header_row is None:
+        st.error("Non trovo intestazione 'Data' nel file Billy.")
+        st.stop()
+
+    billy_df = pd.read_excel(
+        billy_file,
+        sheet_name="Corrispettivi",
+        header=header_row
+    )
+
     billy_df.columns = billy_df.columns.str.strip()
 
-    billy_df["Data"] = pd.to_datetime(billy_df["Data"], dayfirst=True, errors="coerce")
+    billy_df["Data"] = pd.to_datetime(
+        billy_df["Data"],
+        dayfirst=True,
+        errors="coerce"
+    )
+
     billy_df = billy_df.dropna(subset=["Data"])
     billy_df["Data"] = billy_df["Data"].dt.date
 
+    # Trova colonne Contanti ed Elettronico
     cols_lower = billy_df.columns.str.lower()
+
     contanti_col = billy_df.columns[cols_lower.str.contains("contanti")][0]
     elettronico_col = billy_df.columns[cols_lower.str.contains("elettron")][0]
 
-    billy_df[contanti_col] = pd.to_numeric(billy_df[contanti_col], errors="coerce").fillna(0)
-    billy_df[elettronico_col] = pd.to_numeric(billy_df[elettronico_col], errors="coerce").fillna(0)
+    billy_df[contanti_col] = pd.to_numeric(
+        billy_df[contanti_col],
+        errors="coerce"
+    ).fillna(0)
 
-    billy_df["Totale_Billy"] = billy_df[contanti_col] + billy_df[elettronico_col]
+    billy_df[elettronico_col] = pd.to_numeric(
+        billy_df[elettronico_col],
+        errors="coerce"
+    ).fillna(0)
 
-    billy_totali = billy_df.groupby("Data")["Totale_Billy"].sum().reset_index()
+    billy_df["Totale_Billy"] = (
+        billy_df[contanti_col] + billy_df[elettronico_col]
+    )
+
+    billy_totali = (
+        billy_df.groupby("Data")["Totale_Billy"]
+        .sum()
+        .reset_index()
+    )
 
     # ======================
-    # MERGE PER DATA
+    # 3) MERGE CORRETTO (NON PERDE DATE)
     # ======================
-    registro = pd.merge(
-        tuo_totali,
+    registro = tuo_totali.merge(
         billy_totali,
         on="Data",
         how="left"
-    ).fillna(0)
+    )
 
-    registro["Da_Registrare"] = registro["Totale_Tuo"] - registro["Totale_Billy"]
+    registro["Totale_Billy"] = registro["Totale_Billy"].fillna(0)
+
+    registro["Da_Registrare"] = (
+        registro["Totale_Tuo"] - registro["Totale_Billy"]
+    )
 
     registro = registro.sort_values("Data")
 
-    st.subheader("Riepilogo finale per il PDF")
+    st.subheader("Registro finale (PDF)")
     st.dataframe(registro)
 
     # ======================
-    # PDF
+    # 4) PDF
     # ======================
     if st.button("Genera PDF Registro"):
 
@@ -110,16 +162,22 @@ if numbers_file and billy_file:
 
         table = Table(data, hAlign='LEFT')
         table.setStyle(TableStyle([
-            ("BACKGROUND", (0,0), (-1,0), colors.lightgrey),
-            ("GRID", (0,0), (-1,-1), 0.5, colors.grey),
-            ("ALIGN", (1,1), (-1,-1), "RIGHT"),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
         ]))
 
         elements.append(table)
         elements.append(Spacer(1, 20))
 
         totale_periodo = registro["Da_Registrare"].sum()
-        elements.append(Paragraph(f"Totale periodo da registrare: € {totale_periodo:.2f}", styles["Heading2"]))
+
+        elements.append(
+            Paragraph(
+                f"Totale periodo da registrare: € {totale_periodo:.2f}",
+                styles["Heading2"]
+            )
+        )
 
         doc.build(elements)
         buffer.seek(0)
