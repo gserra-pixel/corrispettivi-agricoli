@@ -14,16 +14,28 @@ billy_file = st.file_uploader("Carica XLSX Billy", type=["xlsx"])
 if numbers_file and billy_file:
 
     # ======================
-    # 1) TUO CSV (BASE ASSOLUTA)
+    # 1) TUO CSV (BASE)
     # ======================
     tuo_df = pd.read_csv(numbers_file, sep=None, engine="python")
     tuo_df.columns = tuo_df.columns.str.strip()
 
-    # Individua colonne
     data_col = [c for c in tuo_df.columns if "data" in c.lower()][0]
     importo_col = [c for c in tuo_df.columns if "importo" in c.lower()][0]
 
-    # Pulizia data
+    # --- SISTEMA ANNO A 4 CIFRE ---
+    tuo_df[data_col] = tuo_df[data_col].astype(str).str.strip()
+
+    def fix_year(d):
+        if "/" in d:
+            parts = d.split("/")
+            if len(parts[-1]) == 2:   # anno a 2 cifre
+                giorno, mese, anno = parts
+                anno = "20" + anno
+                return f"{giorno}/{mese}/{anno}"
+        return d
+
+    tuo_df[data_col] = tuo_df[data_col].apply(fix_year)
+
     tuo_df["Data"] = pd.to_datetime(
         tuo_df[data_col],
         dayfirst=True,
@@ -33,7 +45,7 @@ if numbers_file and billy_file:
     tuo_df = tuo_df.dropna(subset=["Data"])
     tuo_df["Data"] = tuo_df["Data"].dt.date
 
-    # Pulizia importi (gestisce 580,00 o 580.00)
+    # --- SISTEMA IMPORTI ---
     tuo_df["Importo"] = (
         tuo_df[importo_col]
         .astype(str)
@@ -45,7 +57,7 @@ if numbers_file and billy_file:
         errors="coerce"
     ).fillna(0)
 
-    # SOMMA PER DATA (ma partendo solo dal tuo CSV)
+    # SOMMA PER DATA (il tuo totale reale)
     tuo_totali = (
         tuo_df.groupby("Data")["Importo"]
         .sum()
@@ -54,7 +66,7 @@ if numbers_file and billy_file:
 
     tuo_totali.rename(columns={"Importo": "Totale_Tuo"}, inplace=True)
 
-    st.subheader("Totali dal tuo CSV (prima del merge)")
+    st.subheader("Totali dal tuo CSV")
     st.dataframe(tuo_totali)
 
     # ======================
@@ -89,7 +101,6 @@ if numbers_file and billy_file:
     billy_df = billy_df.dropna(subset=["Data"])
     billy_df["Data"] = billy_df["Data"].dt.date
 
-    # Trova colonne Contanti ed Elettronico
     cols_lower = billy_df.columns.str.lower()
 
     contanti_col = billy_df.columns[cols_lower.str.contains("contanti")][0]
@@ -116,7 +127,7 @@ if numbers_file and billy_file:
     )
 
     # ======================
-    # 3) MERGE CORRETTO (NON PERDE DATE)
+    # 3) MERGE CORRETTO
     # ======================
     registro = tuo_totali.merge(
         billy_totali,
