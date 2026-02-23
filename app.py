@@ -38,20 +38,21 @@ if numbers_file and billy_file:
         }).fillna(0).reset_index()
 
         # ===== BILLY =====
-        billy_df = pd.read_excel(billy_file)
+        billy_df = pd.read_excel(billy_file, sheet_name="Corrispettivi")
         billy_df.columns = billy_df.columns.str.strip()
 
         billy_df["Data"] = pd.to_datetime(billy_df["Data"], dayfirst=True, errors="coerce")
 
         billy_grouped = (
-            billy_df.groupby("Data")[["Contanti", "POS"]]
+            billy_df.groupby("Data")[["Contanti", "Elettronico", "Totale lordo"]]
             .sum()
             .reset_index()
         )
 
         billy_grouped.rename(columns={
             "Contanti": "Contanti_Billy",
-            "POS": "POS_Billy"
+            "Elettronico": "POS_Billy",
+            "Totale lordo": "Totale_Billy"
         }, inplace=True)
 
         # ===== MERGE =====
@@ -95,6 +96,7 @@ if numbers_file and billy_file:
                 Contanti Billy: € {row['Contanti_Billy']:.2f}<br/>
                 POS Reale: € {row['POS_Reale']:.2f}<br/>
                 POS Billy: € {row['POS_Billy']:.2f}<br/>
+                Totale Billy: € {row['Totale_Billy']:.2f}<br/>
                 Differenza Totale: € {row['Diff_Totale']:.2f}<br/><br/>
                 """
                 elements.append(Paragraph(testo, styles["Normal"]))
