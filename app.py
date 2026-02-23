@@ -5,42 +5,24 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 
-st.title("Confronto Corrispettivi - Numbers vs Billy")
+st.title("Confronto Totale Mercato vs Billy")
 
-numbers_file = st.file_uploader("Carica CSV Numbers (Data;Metodo;Importo)", type=["csv"])
+numbers_file = st.file_uploader("Carica CSV tuo totale mercato (Data;Importo)", type=["csv"])
 billy_file = st.file_uploader("Carica XLSX Billy", type=["xlsx"])
 
 if numbers_file and billy_file:
 
-    # =========================
-    # NUMBERS
-    # =========================
+    # ===== NUMBERS (TUO TOTALE MERCATO) =====
     numbers_df = pd.read_csv(numbers_file, sep=";")
     numbers_df.columns = numbers_df.columns.str.strip()
 
-    numbers_df["Data"] = pd.to_datetime(numbers_df["Data"], dayfirst=True, errors="coerce")
+    numbers_df["Data"] = pd.to_datetime(numbers_df["Data"], dayfirst=True, errors="coerce").dt.date
     numbers_df["Importo"] = pd.to_numeric(numbers_df["Importo"], errors="coerce").fillna(0)
 
-    contanti_reali = (
-        numbers_df[numbers_df["Metodo"].str.lower().str.strip() == "contanti"]
-        .groupby("Data")["Importo"]
-        .sum()
-    )
+    numbers_grouped = numbers_df.groupby("Data")["Importo"].sum().reset_index()
+    numbers_grouped.rename(columns={"Importo": "Totale_Tuo"}, inplace=True)
 
-    pos_reali = (
-        numbers_df[numbers_df["Metodo"].str.lower().str.strip() == "pos"]
-        .groupby("Data")["Importo"]
-        .sum()
-    )
-
-    numbers_grouped = pd.DataFrame({
-        "Contanti_Reale": contanti_reali,
-        "POS_Reale": pos_reali
-    }).fillna(0).reset_index()
-
-    # =========================
-    # BILLY - TROVA HEADER AUTOMATICO
-    # =========================
+    # ===== BILLY =====
     raw_billy = pd.read_excel(billy_file, sheet_name="Corrispettivi", header=None)
 
     header_row = None
@@ -48,10 +30,6 @@ if numbers_file and billy_file:
         if raw_billy.iloc[i].astype(str).str.contains("Data", case=False).any():
             header_row = i
             break
-
-    if header_row is None:
-        st.error("Non riesco a trovare la riga intestazione nel file Billy.")
-        st.stop()
 
     billy_df = pd.read_excel(
         billy_file,
@@ -62,33 +40,15 @@ if numbers_file and billy_file:
     billy_df.columns = billy_df.columns.str.strip()
     cols = billy_df.columns.str.lower()
 
-    # Trova colonne dinamicamente
     data_col = billy_df.columns[cols.str.contains("data")][0]
-    contanti_col = billy_df.columns[cols.str.contains("contanti")][0]
-    elettronico_col = billy_df.columns[cols.str.contains("elettron")][0]
+    totale_col = billy_df.columns[cols.str.contains("totale")][0]
 
-    billy_df[data_col] = pd.to_datetime(billy_df[data_col], dayfirst=True, errors="coerce")
+    billy_df[data_col] = pd.to_datetime(billy_df[data_col], dayfirst=True, errors="coerce").dt.date
 
-    billy_grouped = (
-        billy_df.groupby(data_col)[[contanti_col, elettronico_col]]
-        .sum()
-        .reset_index()
-    )
+    billy_grouped = billy_df.groupby(data_col)[totale_col].sum().reset_index()
+    billy_grouped.columns = ["Data", "Totale_Billy"]
 
-    billy_grouped.columns = [
-        "Data",
-        "Contanti_Billy",
-        "POS_Billy"
-    ]
-
-    # Ricalcolo totale
-    billy_grouped["Totale_Billy"] = (
-        billy_grouped["Contanti_Billy"] + billy_grouped["POS_Billy"]
-    )
-
-    # =========================
-    # MERGE
-    # =========================
+    # ===== MERGE =====
     confronto = pd.merge(
         numbers_grouped,
         billy_grouped,
@@ -96,21 +56,17 @@ if numbers_file and billy_file:
         how="outer"
     ).fillna(0)
 
-    confronto["Diff_Contanti"] = confronto["Contanti_Reale"] - confronto["Contanti_Billy"]
-    confronto["Diff_POS"] = confronto["POS_Reale"] - confronto["POS_Billy"]
-    confronto["Diff_Totale"] = confronto["Diff_Contanti"] + confronto["Diff_POS"]
+    confronto["Differenza"] = confronto["Totale_Tuo"] - confronto["Totale_Billy"]
 
     confronto = confronto.sort_values("Data")
 
-    st.subheader("Tabella Confronto")
+    st.subheader("Confronto Giornaliero")
     st.dataframe(confronto)
 
-    totale_diff = confronto["Diff_Totale"].sum()
+    totale_diff = confronto["Differenza"].sum()
     st.subheader(f"Differenza Totale Periodo: € {totale_diff:.2f}")
 
-    # =========================
-    # PDF
-    # =========================
+    # ===== PDF =====
     if st.button("Genera PDF"):
 
         buffer = BytesIO()
@@ -120,18 +76,15 @@ if numbers_file and billy_file:
 
         elements.append(Paragraph("AZIENDA AGRICOLA PEDRA E LUNA", styles["Heading1"]))
         elements.append(Spacer(1, 12))
-        elements.append(Paragraph("Confronto Corrispettivi Numbers vs Billy", styles["Normal"]))
+        elements.append(Paragraph("Confronto Totale Mercato vs Billy", styles["Normal"]))
         elements.append(Spacer(1, 20))
 
         for _, row in confronto.iterrows():
             testo = f"""
             Data: {row['Data'].strftime('%d/%m/%Y')}<br/>
-            Contanti Reali: € {row['Contanti_Reale']:.2f}<br/>
-            Contanti Billy: € {row['Contanti_Billy']:.2f}<br/>
-            POS Reale: € {row['POS_Reale']:.2f}<br/>
-            POS Billy: € {row['POS_Billy']:.2f}<br/>
+            Totale Tuo: € {row['Totale_Tuo']:.2f}<br/>
             Totale Billy: € {row['Totale_Billy']:.2f}<br/>
-            Differenza Totale: € {row['Diff_Totale']:.2f}<br/><br/>
+            Differenza: € {row['Differenza']:.2f}<br/><br/>
             """
             elements.append(Paragraph(testo, styles["Normal"]))
             elements.append(Spacer(1, 12))
@@ -145,6 +98,6 @@ if numbers_file and billy_file:
         st.download_button(
             "Scarica PDF",
             buffer,
-            file_name="confronto_corrispettivi.pdf",
+            file_name="confronto_totali.pdf",
             mime="application/pdf"
         )
