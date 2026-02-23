@@ -14,21 +14,19 @@ billy_file = st.file_uploader("Carica XLSX Billy", type=["xlsx"])
 if numbers_file and billy_file:
 
     # ======================
-    # TUO CSV (ROBUSTO)
+    # TUO CSV
     # ======================
     tuo_df = pd.read_csv(numbers_file, sep=";")
     tuo_df.columns = tuo_df.columns.str.strip()
 
-    # Date sicure
     tuo_df["Data"] = pd.to_datetime(tuo_df["Data"], dayfirst=True, errors="coerce")
     tuo_df = tuo_df.dropna(subset=["Data"])
     tuo_df["Data"] = tuo_df["Data"].dt.date
 
-    # Importo e Aliquota sicuri
     tuo_df["Importo"] = pd.to_numeric(tuo_df["Importo"], errors="coerce").fillna(0)
     tuo_df["Aliquota"] = pd.to_numeric(tuo_df["Aliquota"], errors="coerce").fillna(0)
 
-    # Calcolo IVA
+    # Calcolo IVA dal tuo CSV
     tuo_df["Imponibile"] = tuo_df["Importo"] / (1 + tuo_df["Aliquota"] / 100)
     tuo_df["IVA"] = tuo_df["Importo"] - tuo_df["Imponibile"]
 
@@ -50,7 +48,7 @@ if numbers_file and billy_file:
             break
 
     if header_row is None:
-        st.error("Non trovo intestazione Data nel file Billy.")
+        st.error("Non trovo intestazione 'Data' nel file Billy.")
         st.stop()
 
     billy_df = pd.read_excel(billy_file, sheet_name="Corrispettivi", header=header_row)
@@ -60,21 +58,21 @@ if numbers_file and billy_file:
     billy_df = billy_df.dropna(subset=["Data"])
     billy_df["Data"] = billy_df["Data"].dt.date
 
-    totale_col = [c for c in billy_df.columns if "totale" in c.lower()]
+    cols_lower = billy_df.columns.str.lower()
 
-    if not totale_col:
-        st.error("Non trovo colonna Totale nel file Billy.")
-        st.stop()
+    contanti_col = billy_df.columns[cols_lower.str.contains("contanti")][0]
+    elettronico_col = billy_df.columns[cols_lower.str.contains("elettron")][0]
 
-    totale_col = totale_col[0]
+    billy_df[contanti_col] = pd.to_numeric(billy_df[contanti_col], errors="coerce").fillna(0)
+    billy_df[elettronico_col] = pd.to_numeric(billy_df[elettronico_col], errors="coerce").fillna(0)
+
+    billy_df["Totale_Billy"] = billy_df[contanti_col] + billy_df[elettronico_col]
 
     billy_grouped = (
-        billy_df.groupby("Data")[totale_col]
+        billy_df.groupby("Data")["Totale_Billy"]
         .sum()
         .reset_index()
     )
-
-    billy_grouped.rename(columns={totale_col: "Totale_Billy"}, inplace=True)
 
     # ======================
     # MERGE
