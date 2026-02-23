@@ -6,29 +6,29 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 
-st.title("Registro Corrispettivi - Mercato vs Billy")
+st.title("Registro Corrispettivi - Versione Completa")
 
-numbers_file = st.file_uploader("Carica CSV mercato (Data;Importo)", type=["csv"])
+numbers_file = st.file_uploader("Carica CSV mercato (Data;Importo;Aliquota)", type=["csv"])
 billy_file = st.file_uploader("Carica XLSX Billy", type=["xlsx"])
 
 if numbers_file and billy_file:
 
     # ======================
-    # 1) TUO CSV (BASE)
+    # TUO CSV
     # ======================
     tuo_df = pd.read_csv(numbers_file, sep=None, engine="python")
     tuo_df.columns = tuo_df.columns.str.strip()
 
     data_col = [c for c in tuo_df.columns if "data" in c.lower()][0]
     importo_col = [c for c in tuo_df.columns if "importo" in c.lower()][0]
+    aliquota_col = [c for c in tuo_df.columns if "aliquota" in c.lower()][0]
 
-    # --- SISTEMA ANNO A 4 CIFRE ---
     tuo_df[data_col] = tuo_df[data_col].astype(str).str.strip()
 
     def fix_year(d):
         if "/" in d:
             parts = d.split("/")
-            if len(parts[-1]) == 2:   # anno a 2 cifre
+            if len(parts[-1]) == 2:
                 giorno, mese, anno = parts
                 anno = "20" + anno
                 return f"{giorno}/{mese}/{anno}"
@@ -36,41 +36,23 @@ if numbers_file and billy_file:
 
     tuo_df[data_col] = tuo_df[data_col].apply(fix_year)
 
-    tuo_df["Data"] = pd.to_datetime(
-        tuo_df[data_col],
-        dayfirst=True,
-        errors="coerce"
-    )
-
+    tuo_df["Data"] = pd.to_datetime(tuo_df[data_col], dayfirst=True, errors="coerce")
     tuo_df = tuo_df.dropna(subset=["Data"])
     tuo_df["Data"] = tuo_df["Data"].dt.date
 
-    # --- SISTEMA IMPORTI ---
     tuo_df["Importo"] = (
         tuo_df[importo_col]
         .astype(str)
         .str.replace(",", ".", regex=False)
     )
+    tuo_df["Importo"] = pd.to_numeric(tuo_df["Importo"], errors="coerce").fillna(0)
+    tuo_df["Aliquota"] = pd.to_numeric(tuo_df[aliquota_col], errors="coerce").fillna(0)
 
-    tuo_df["Importo"] = pd.to_numeric(
-        tuo_df["Importo"],
-        errors="coerce"
-    ).fillna(0)
-
-    # SOMMA PER DATA (il tuo totale reale)
-    tuo_totali = (
-        tuo_df.groupby("Data")["Importo"]
-        .sum()
-        .reset_index()
-    )
-
-    tuo_totali.rename(columns={"Importo": "Totale_Tuo"}, inplace=True)
-
-    st.subheader("Totali dal tuo CSV")
-    st.dataframe(tuo_totali)
+    totale_giorno = tuo_df.groupby("Data")["Importo"].sum().reset_index()
+    totale_giorno.rename(columns={"Importo": "Totale_Tuo_Giorno"}, inplace=True)
 
     # ======================
-    # 2) BILLY
+    # BILLY
     # ======================
     raw = pd.read_excel(billy_file, sheet_name="Corrispettivi", header=None)
 
@@ -80,74 +62,53 @@ if numbers_file and billy_file:
             header_row = i
             break
 
-    if header_row is None:
-        st.error("Non trovo intestazione 'Data' nel file Billy.")
-        st.stop()
-
-    billy_df = pd.read_excel(
-        billy_file,
-        sheet_name="Corrispettivi",
-        header=header_row
-    )
-
+    billy_df = pd.read_excel(billy_file, sheet_name="Corrispettivi", header=header_row)
     billy_df.columns = billy_df.columns.str.strip()
 
-    billy_df["Data"] = pd.to_datetime(
-        billy_df["Data"],
-        dayfirst=True,
-        errors="coerce"
-    )
-
+    billy_df["Data"] = pd.to_datetime(billy_df["Data"], dayfirst=True, errors="coerce")
     billy_df = billy_df.dropna(subset=["Data"])
     billy_df["Data"] = billy_df["Data"].dt.date
 
     cols_lower = billy_df.columns.str.lower()
-
     contanti_col = billy_df.columns[cols_lower.str.contains("contanti")][0]
     elettronico_col = billy_df.columns[cols_lower.str.contains("elettron")][0]
 
-    billy_df[contanti_col] = pd.to_numeric(
-        billy_df[contanti_col],
-        errors="coerce"
-    ).fillna(0)
+    billy_df[contanti_col] = pd.to_numeric(billy_df[contanti_col], errors="coerce").fillna(0)
+    billy_df[elettronico_col] = pd.to_numeric(billy_df[elettronico_col], errors="coerce").fillna(0)
 
-    billy_df[elettronico_col] = pd.to_numeric(
-        billy_df[elettronico_col],
-        errors="coerce"
-    ).fillna(0)
+    billy_df["Totale_Billy"] = billy_df[contanti_col] + billy_df[elettronico_col]
+    billy_totale = billy_df.groupby("Data")["Totale_Billy"].sum().reset_index()
 
-    billy_df["Totale_Billy"] = (
-        billy_df[contanti_col] + billy_df[elettronico_col]
-    )
+    giorni = totale_giorno.merge(billy_totale, on="Data", how="left").fillna(0)
+    giorni["Residuo_Giorno"] = giorni["Totale_Tuo_Giorno"] - giorni["Totale_Billy"]
 
-    billy_totali = (
-        billy_df.groupby("Data")["Totale_Billy"]
-        .sum()
-        .reset_index()
-    )
+    registro = tuo_df.merge(giorni[["Data", "Totale_Tuo_Giorno", "Residuo_Giorno"]], on="Data")
+
+    registro["Quota"] = registro["Importo"] / registro["Totale_Tuo_Giorno"]
+    registro["Lordo_Residuo"] = registro["Residuo_Giorno"] * registro["Quota"]
+
+    registro["Imponibile"] = registro["Lordo_Residuo"] / (1 + registro["Aliquota"] / 100)
+    registro["IVA"] = registro["Lordo_Residuo"] - registro["Imponibile"]
+
+    registro = registro.sort_values(["Data", "Aliquota"])
 
     # ======================
-    # 3) MERGE CORRETTO
+    # RIEPILOGO PER ALIQUOTA
     # ======================
-    registro = tuo_totali.merge(
-        billy_totali,
-        on="Data",
-        how="left"
-    )
+    riepilogo_aliquota = registro.groupby("Aliquota").agg({
+        "Lordo_Residuo": "sum",
+        "Imponibile": "sum",
+        "IVA": "sum"
+    }).reset_index()
 
-    registro["Totale_Billy"] = registro["Totale_Billy"].fillna(0)
-
-    registro["Da_Registrare"] = (
-        registro["Totale_Tuo"] - registro["Totale_Billy"]
-    )
-
-    registro = registro.sort_values("Data")
-
-    st.subheader("Registro finale (PDF)")
+    st.subheader("Dettaglio Giornaliero")
     st.dataframe(registro)
 
+    st.subheader("Riepilogo IVA per Aliquota")
+    st.dataframe(riepilogo_aliquota)
+
     # ======================
-    # 4) PDF
+    # PDF
     # ======================
     if st.button("Genera PDF Registro"):
 
@@ -157,45 +118,63 @@ if numbers_file and billy_file:
         elements = []
 
         elements.append(Paragraph("AZIENDA AGRICOLA PEDRA E LUNA", styles["Heading1"]))
-        elements.append(Spacer(1, 12))
-        elements.append(Paragraph("Registro Corrispettivi", styles["Heading2"]))
+        elements.append(Paragraph("Registro Corrispettivi - Regime Speciale Art.34 DPR 633/72", styles["Normal"]))
         elements.append(Spacer(1, 20))
 
-        data = [["Data", "Totale Mercato", "Totale Billy", "Da Registrare"]]
+        data = [["Data", "Aliquota", "Lordo Residuo", "Imponibile", "IVA"]]
 
         for _, r in registro.iterrows():
             data.append([
                 r["Data"].strftime("%d/%m/%Y"),
-                f"€ {r['Totale_Tuo']:.2f}",
-                f"€ {r['Totale_Billy']:.2f}",
-                f"€ {r['Da_Registrare']:.2f}",
+                f"{int(r['Aliquota'])}%",
+                f"€ {r['Lordo_Residuo']:.2f}",
+                f"€ {r['Imponibile']:.2f}",
+                f"€ {r['IVA']:.2f}",
             ])
 
-        table = Table(data, hAlign='LEFT')
+        table = Table(data)
         table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-            ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+            ("BACKGROUND", (0,0), (-1,0), colors.lightgrey),
+            ("GRID", (0,0), (-1,-1), 0.5, colors.grey),
+            ("ALIGN", (2,1), (-1,-1), "RIGHT"),
         ]))
 
         elements.append(table)
         elements.append(Spacer(1, 20))
 
-        totale_periodo = registro["Da_Registrare"].sum()
+        elements.append(Paragraph("RIEPILOGO IVA PER ALIQUOTA", styles["Heading2"]))
+        elements.append(Spacer(1, 10))
 
-        elements.append(
-            Paragraph(
-                f"Totale periodo da registrare: € {totale_periodo:.2f}",
-                styles["Heading2"]
-            )
-        )
+        data2 = [["Aliquota", "Totale Lordo", "Imponibile", "IVA"]]
+
+        for _, r in riepilogo_aliquota.iterrows():
+            data2.append([
+                f"{int(r['Aliquota'])}%",
+                f"€ {r['Lordo_Residuo']:.2f}",
+                f"€ {r['Imponibile']:.2f}",
+                f"€ {r['IVA']:.2f}",
+            ])
+
+        table2 = Table(data2)
+        table2.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.lightgrey),
+            ("GRID", (0,0), (-1,-1), 0.5, colors.grey),
+            ("ALIGN", (1,1), (-1,-1), "RIGHT"),
+        ]))
+
+        elements.append(table2)
+
+        totale_periodo = registro["Lordo_Residuo"].sum()
+
+        elements.append(Spacer(1, 20))
+        elements.append(Paragraph(f"Totale periodo da registrare: € {totale_periodo:.2f}", styles["Heading2"]))
 
         doc.build(elements)
         buffer.seek(0)
 
         st.download_button(
-            "Scarica PDF Registro Corrispettivi",
+            "Scarica PDF Registro Completo",
             buffer,
-            file_name="registro_corrispettivi.pdf",
+            file_name="registro_corrispettivi_completo.pdf",
             mime="application/pdf"
         )
